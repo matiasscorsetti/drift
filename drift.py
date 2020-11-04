@@ -8,27 +8,38 @@ from math import sqrt
 import weightedstats as ws
 import plotly.express as px
 from warnings import warn
-
+from sklearn.preprocessing import MinMaxScaler
+from copy import deepcopy
 
 def drift_detection(data_stream,
                     delta, # delta in adwin detection
+                    predict=False,
                     drift_detector=None,
                     ):
     """ data change detection """
 
-    if drift_detector is None:
+    if predict is False:
         drift_detector = ADWIN(delta=delta)
 
-    results = pd.DataFrame(columns=["sqrt", "change"])
+    else:
+        copy_drift_detector = deepcopy(drift_detector)
+
+    results = pd.DataFrame(columns=["value", "sqrt", "change"])
     
     for index, row in data_stream.iteritems():
          drift_detector.add_element(row)
+         change = drift_detector.detected_change()
          result = pd.DataFrame(data={
+                                     "value": row,
                                      "sqrt": sqrt(drift_detector.variance), 
-                                     "change": 1 if drift_detector.detected_change()==True else 0,
+                                     "change": 1 if change==True else 0,
                                      },
                                index=[index],
                                )
+
+         if change==True and predict==True:
+             drift_detector = deepcopy(copy_drift_detector)
+
          results = results.append(result)
 
     return results, drift_detector
@@ -36,31 +47,38 @@ def drift_detection(data_stream,
 
 def drift_detect_multicols(df,
                            delta,
+                           predict=False,
                            drift_detector_dict=None,
+                           scaler_dict=None,
                            ):
     """ data change detection for each column """
 
     df_results = pd.DataFrame()
 
-    if drift_detector_dict is None:
+    if predict is False:
         drift_detector_dict = {}
+        scaler_dict = {}
+
         for col in df.columns:
             results, drift_detector = drift_detection(data_stream=df[col],
                                                       delta=delta)
-            results.columns = [i + '_' + col for i in results.columns]
+            scaler = MinMaxScaler()
+            results = pd.DataFrame(scaler.fit_transform(results), columns=[i + '_' + col for i in results.columns])
             df_results = pd.concat([df_results, results], axis=1)
             drift_detector_dict[str(col) + "_detector"] = drift_detector
+            scaler_dict[str(col) + "_scaler"] = scaler
 
     else:
-        for col, drift_detector in zip(df.columns, drift_detector_dict.values()):
+        for col, drift_detector, scaler in zip(df.columns, drift_detector_dict.values(), scaler_dict.values()):
             results, drift_detector = drift_detection(data_stream=df[col],
                                                       delta=delta,
+                                                      predict=True,
                                                       drift_detector=drift_detector,
                                                       )
-            results.columns = [i + '_' + col for i in results.columns]
+            results = pd.DataFrame(scaler.transform(results), columns=[i + '_' + col for i in results.columns])
             df_results = pd.concat([df_results, results], axis=1)
 
-    return df_results, drift_detector_dict
+    return df_results, drift_detector_dict, scaler_dict
 
 
 def n_optimal_clusters(df,
@@ -138,13 +156,21 @@ def cluster_sampling(df,
 
 def drift_df_multicols(df,
                       delta=0.99,
+                      predict=False,
                       drift_detector_dict=None,
+                      scaler_dict=None,
                       cluster_model=None,
+                      scaler_df=None,
                       sample_size=0.1,
                       k=(1,9),
                       n_clusters_without_method=5,
                       ):
     ''' build drift dataframe '''
+
+    if scaler_df is None:
+        scaler_df = MinMaxScaler()
+
+    df = pd.DataFrame(scaler_df.fit_transform(df), columns=df.columns)
 
     if float(sample_size) != 1.0:
         df, cluster_model = cluster_sampling(df=df,
@@ -156,12 +182,14 @@ def drift_df_multicols(df,
     else:
         print("sampling does not apply")
 
-    df_results, drift_detector_dict = drift_detect_multicols(df=df,
-                                                             delta=delta,
-                                                             drift_detector_dict=drift_detector_dict,
-                                                             )
+    df_results, drift_detector_dict, scaler_dict = drift_detect_multicols(df=df,
+                                                                          delta=delta,
+                                                                          predict=predict,
+                                                                          drift_detector_dict=drift_detector_dict,
+                                                                          scaler_dict=scaler_dict,
+                                                                          )
 
-    return df_results, drift_detector_dict, cluster_model
+    return df_results, drift_detector_dict, scaler_dict, cluster_model, scaler_df
 
 
 def drift_average_calculate(df_results,
@@ -183,22 +211,28 @@ def plot_drift(df,
                ):
     ''' plot variance and change detect for each column '''
     
+    values_columns = [col for col in df.columns if col.startswith("value_")]
     sqrt_columns = [col for col in df.columns if col.startswith("sqrt_")]
     change_columns = [col for col in df.columns if col.startswith("change_")]
-    rows = len(sqrt_columns)
+    rows = len(values_columns)
     fig_list = []
 
-    for sqrt, change in zip(sqrt_columns, change_columns):
-        trace = px.scatter(x=df.reset_index().index,
+    for value, sqrt, change in zip(values_columns, sqrt_columns, change_columns):
+        fig = px.scatter(x=df.reset_index().index,
                            y=df[sqrt],
-                           color=df[change],
+                           color=df[change].astype(int).astype(str),
                            title=sqrt, 
-                           color_discrete_map={1:"red", 0:"blue"},
+                           color_discrete_map={"1":'#EF553B', "0":'#636EFA'},
                            )
-        trace.update_layout(xaxis_title="X - index number",
-                            yaxis_title="Y - sqrt",
-                            )
-        fig_list.append(trace)
+        fig.update_layout(legend_title_text='change detect')
+        fig2 = px.line(x=df.reset_index().index, y=df[value], color_discrete_sequence=['rgba(0, 204, 150, .25)'])
+        fig2['data'][0]['showlegend'] = True
+        fig2['data'][0]['name'] = 'scaled value'
+        fig.add_trace(fig2.data[0])
+        fig.update_layout(xaxis_title="X - index number",
+                          yaxis_title="Y - sqrt",
+                          )
+        fig_list.append(fig)
 
     return fig_list
 
@@ -217,15 +251,18 @@ class DriftEstimator(object):
 
 
     def fit(self, df):
-        df_results, drift_detector_dict, cluster_model = drift_df_multicols(df=df,
-                                                                            delta=self.delta,
-                                                                            sample_size=self.sample_size,
-                                                                            k=self.k,
-                                                                            n_clusters_without_method=self.n_clusters_without_method,
-                                                                            )
+        df_results, drift_detector_dict, scaler_dict, cluster_model, scaler_df = drift_df_multicols(df=df,
+                                                                                         delta=self.delta,
+                                                                                         predict=False,
+                                                                                         sample_size=self.sample_size,
+                                                                                         k=self.k,
+                                                                                         n_clusters_without_method=self.n_clusters_without_method,
+                                                                                         )
         self.df_results = df_results
         self.drift_detector_dict = drift_detector_dict
+        self.scaler_dict = scaler_dict
         self.cluster_model = cluster_model
+        self.scaler_df = scaler_df
 
         totals, percentage, drift_average = drift_average_calculate(df_results=self.df_results,
                                                                     list_of_weights=self.list_of_weights,
@@ -237,17 +274,18 @@ class DriftEstimator(object):
         self.plots = plot_drift(df=self.df_results)
         
     def predict(self, df, sample_size=1):
-        df_results_predict, drift_detector_dict_predict, cluster_model_predict = drift_df_multicols(df=df,
-                                                                                                    delta=self.delta,
-                                                                                                    drift_detector_dict=self.drift_detector_dict,
-                                                                                                    cluster_model=self.cluster_model,
-                                                                                                    sample_size=sample_size,
-                                                                                                    k=self.k,
-                                                                                                    n_clusters_without_method=self.n_clusters_without_method,
-                                                                                                    )
+        df_results_predict, drift_detector_dict_predict, scaler_dict, cluster_model_predict, scaler_df_predict = drift_df_multicols(df=df,
+                                                                                                                 delta=self.delta,
+                                                                                                                 predict=True,
+                                                                                                                 drift_detector_dict=self.drift_detector_dict,
+                                                                                                                 scaler_dict=self.scaler_dict,
+                                                                                                                 cluster_model=self.cluster_model,
+                                                                                                                 scaler_df=self.scaler_df,
+                                                                                                                 sample_size=sample_size,
+                                                                                                                 k=self.k,
+                                                                                                                 n_clusters_without_method=self.n_clusters_without_method,
+                                                                                                                 )
         self.df_results_predict = df_results_predict
-        self.drift_detector_dict_predict = drift_detector_dict_predict
-        self.cluster_model_predict = cluster_model_predict
 
         totals_predict, percentage, drift_average_predict = drift_average_calculate(df_results=self.df_results_predict,
                                                                                     list_of_weights=self.list_of_weights,
