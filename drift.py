@@ -3,7 +3,8 @@ import numpy as np
 from skmultiflow.drift_detection.adwin import ADWIN
 from sklearn.cluster import MiniBatchKMeans
 from yellowbrick.cluster import KElbowVisualizer
-from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import train_test_split
+from sklearn.utils import resample
 import weightedstats as ws
 from warnings import warn
 from sklearn.preprocessing import MinMaxScaler
@@ -166,10 +167,8 @@ def cluster_sampling(df,
 
         try:
             print("cluster sampling")
-            sss = StratifiedShuffleSplit(n_splits=1, test_size=sample_size)
-
-            for train_index, test_index in sss.split(df.values, y):
-               df_results = df.iloc[test_index]
+            X_train, X_test, y_train, y_test = train_test_split(df.values, y, stratify=y, test_size=sample_size)
+            df_results = pd.DataFrame(X_test, columns=df.columns)
 
             return df_results, cluster_model
 
@@ -192,7 +191,7 @@ def drift_df_multicols(df,
                       scaler_dict=None,
                       cluster_model=None,
                       scaler_df=None,
-                      sample_size=0.1,
+                      sample_size=None,
                       k=(1,9),
                       n_clusters_without_method=5,
                       ):
@@ -203,13 +202,19 @@ def drift_df_multicols(df,
 
     df = pd.DataFrame(scaler_df.fit_transform(df), columns=df.columns)
 
-    if float(sample_size) != 1.0:
-        df, cluster_model = cluster_sampling(df=df,
-                                             sample_size=sample_size,
-                                             k=k,
-                                             n_clusters_without_method=n_clusters_without_method,
-                                             cluster_model=cluster_model,
-                                             )
+    if sample_size is not None:
+
+        if sample_size > df.shape[0] and predict == True:
+             print("resample")
+             df = resample(df, n_samples=sample_size)
+        
+        else:
+            df, cluster_model = cluster_sampling(df=df,
+                                                 sample_size=sample_size,
+                                                 k=k,
+                                                 n_clusters_without_method=n_clusters_without_method,
+                                                 cluster_model=cluster_model,
+                                                 )
     else:
         print("sampling does not apply")
 
@@ -299,9 +304,9 @@ def multiplots(df_results,
                ):
 
     rows = len(plots)
-    subplot_titles = [y for col in df_results.columns for y in [(col[6:22] + " train"), (col[6:22] + " predict")] if col.startswith("value_")]
     
     if plots_predict is None:
+        subplot_titles = [y for col in df_results.columns for y in [(col[6:22] + " train")] if col.startswith("value_")]
         fig = make_subplots(rows=rows, cols=1, subplot_titles=subplot_titles)
 
         for row in range(rows):
@@ -309,6 +314,7 @@ def multiplots(df_results,
                 fig.add_trace(plot, row=row+1, col=1)
 
     else:
+        subplot_titles = [y for col in df_results.columns for y in [(col[6:22] + " train"), (col[6:22] + " predict")] if col.startswith("value_")]
         fig = make_subplots(rows=rows, cols=2, subplot_titles=subplot_titles)
 
         for row in range(rows):
@@ -360,9 +366,15 @@ class DriftEstimator(object):
         the two averages exceed a predefined threshold, the change is detected at that point and all data before that point
         is discarded.
 
+        when training the model, the size of the resulting dataset is saved 
+        (if a sample was performed in the training, the sample size determines the dataframe size, see "size" attributes)
+        the results should be evaluated at the dataframe level in general or per column (and not at the row level)
+        
+        always automatically adjusts the size of the input dataframe to the size of the dataset used in training
+
         parameters:
             - delta: delta in adwin detection, delta - the desired false positive rate (default: delta=0.1)
-            - sample_size: sample size using cluster sampling. if sample_size = 1 a sample is not applied (default: sample_size=0.1)
+            - sample_size: sample size using cluster sampling. if sample_size = None a sample is not applied (default: sample_size=0.1)
             - k: the values ​​of k to calculate the number of optimal clusters in the stratified sampling (default: k=(1,9))
             - n_clusters_without_method: n clusters when an optimum is not detected using the elbow method, 
                                         to perform a stratified sampling (default: n_clusters_without_method=5)
@@ -405,6 +417,7 @@ class DriftEstimator(object):
         self.percentage = percentage
         self.drift_average = drift_average
         self.describe_fit = describe_fit
+        self.size = df_results.shape[0]
 
     def plot_train(self):
 
@@ -415,13 +428,14 @@ class DriftEstimator(object):
         return plot
         
 
-    def predict(self, df, sample_size=1):
+    def predict(self, df):
         ''' 
         predict if a dataframe has drift
 
-        parameters: 
-            - df: pandas dataframe
-            - sample_size: stratified sample size
+        size of the input dataframe is always automatically adjusted to the size of the dataset used in the training 
+        (if a sampling was done in the training, the sample size determines the dataframe size, see attributes "size")
+
+        parameters: Pandas Dataframe
 
         return: drift score
 
@@ -439,7 +453,7 @@ class DriftEstimator(object):
                                                 scaler_dict=self.scaler_dict,
                                                 cluster_model=self.cluster_model,
                                                 scaler_df=self.scaler_df,
-                                                sample_size=sample_size,
+                                                sample_size=self.size,
                                                 k=self.k,
                                                 n_clusters_without_method=self.n_clusters_without_method,
                                                 )
