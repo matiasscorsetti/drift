@@ -149,17 +149,22 @@ def n_optimal_clusters(df,
 def cluster_sampling(df,
                      sample_size,
                      k,
-                     n_clusters_without_method,
+                     n_clusters_without_method=3,
                      cluster_model=None,
                      ):
     '''train a clustering model and take a stratified sample '''
 
     if cluster_model is None:
-        n_clusters = n_optimal_clusters(df=df,
-                                        k=k,
-                                        n_clusters_without_method=n_clusters_without_method,
-                                        )
-        cluster_model = MiniBatchKMeans(n_clusters=n_clusters)
+
+        if isinstance(k, int):
+            cluster_model = MiniBatchKMeans(n_clusters=k)
+
+        else:
+            n_clusters = n_optimal_clusters(df=df,
+                                            k=k,
+                                            n_clusters_without_method=n_clusters_without_method,
+                                            )
+            cluster_model = MiniBatchKMeans(n_clusters=n_clusters)
 
     y = cluster_model.fit_predict(df)
 
