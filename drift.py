@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from skmultiflow.drift_detection.adwin import ADWIN
+from skmultiflow.drift_detection import ADWIN
 from sklearn.cluster import MiniBatchKMeans
 from yellowbrick.cluster import KElbowVisualizer
 from sklearn.model_selection import train_test_split
@@ -10,11 +10,13 @@ from warnings import warn
 from sklearn.preprocessing import MinMaxScaler
 from copy import copy
 import plotly.express as px
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
 def drift_detection(data_stream,
                     delta, # delta in adwin detection, delta - the desired false positive rate
+                    window=100, # his is the number of observations used for calculating the standard deviation
                     predict=False,
                     drift_detector=None,
                     ):
@@ -22,21 +24,18 @@ def drift_detection(data_stream,
 
     if predict==False:
         drift_detector = ADWIN(delta=delta)
-        results = pd.DataFrame(columns=["value", "sqrt", "change"])
+        results = pd.DataFrame(columns=["value", "meanc", "stdc", "change"])
 
         for index, row in data_stream.iteritems():
             drift_detector.add_element(row)
             change = drift_detector.detected_change()
-            variance = drift_detector.variance
-            sqrt = np.sqrt(abs(variance))
-            if np.isnan(sqrt):
-                print("complex number", variance)
-                sqrt = 0.0001
-                print(sqrt)
+            meanc_and_stdc = data_stream.iloc[:index+1].rolling(window=window, min_periods=1).agg(['mean','std'])\
+                                .fillna(0).iloc[index].to_numpy()
 
             result = pd.DataFrame(data={
-                                        "value": row,
-                                        "sqrt": sqrt, 
+                                         "value": row,
+                                         "meanc": meanc_and_stdc[0],
+                                         "stdc": meanc_and_stdc[1],
                                         "change": 1 if change==True else 0,
                                         },
                                 index=[index],
@@ -47,21 +46,18 @@ def drift_detection(data_stream,
 
     else:
         copy_drift_detector = copy(drift_detector)
-        results = pd.DataFrame(columns=["value", "sqrt", "change"])
+        results = pd.DataFrame(columns=["value", "meanc", "stdc", "change"])
 
         for index, row in data_stream.iteritems():
              drift_detector.add_element(row)
              change = drift_detector.detected_change()
-             variance = drift_detector.variance
-             sqrt = np.sqrt(abs(variance))
-             if np.isnan(sqrt):
-                print("complex number", variance)
-                sqrt =  0.0001
-                print(sqrt)
+             meanc_and_stdc = data_stream.iloc[:index+1].rolling(window=window, min_periods=1).agg(['mean','std'])\
+                                .fillna(0).iloc[index].to_numpy()
 
              result = pd.DataFrame(data={
-                                         "value": row,
-                                         "sqrt": sqrt,
+                                         "value": row, 
+                                         "meanc": meanc_and_stdc[0],
+                                         "stdc": meanc_and_stdc[1],
                                          "change": 1 if change==True else 0,
                                          },
                                    index=[index],
@@ -77,6 +73,7 @@ def drift_detection(data_stream,
 
 def drift_detect_multicols(df,
                            delta,
+                           window,
                            predict=False,
                            drift_detector_dict=None,
                            scaler_dict=None,
@@ -91,7 +88,8 @@ def drift_detect_multicols(df,
 
         for col in df.columns:
             results, drift_detector = drift_detection(data_stream=df[col],
-                                                      delta=delta)
+                                                      delta=delta,
+                                                      window=window)
             scaler = MinMaxScaler()
             results = pd.DataFrame(scaler.fit_transform(results), columns=[i + '_' + col for i in results.columns])
             df_results = pd.concat([df_results, results], axis=1)
@@ -104,6 +102,7 @@ def drift_detect_multicols(df,
         for col, drift_detector, scaler in zip(df.columns, drift_detector_dict.values(), scaler_dict.values()):
             results = drift_detection(data_stream=df[col],
                                                       delta=delta,
+                                                      window=window,
                                                       predict=True,
                                                       drift_detector=drift_detector,
                                                       )
@@ -181,8 +180,13 @@ def cluster_sampling(df,
             warn(str(ex))
             print("Conglomerate sampling will not be applied. A random sample will be selected")
 
-            return df.sample(frac=sample_size), cluster_model
+            if isinstance(sample_size, float):
+                df = df.sample(frac=sample_size)
 
+            else:
+                df.sample(sample_size)
+
+            return df, cluster_model
 
     else:
         print("Conglomerate sampling will not be applied. A random sample will be selected")
@@ -190,7 +194,8 @@ def cluster_sampling(df,
 
 
 def drift_df_multicols(df,
-                      delta=0.99,
+                      delta=0.002,
+                      window=100,
                       predict=False,
                       drift_detector_dict=None,
                       scaler_dict=None,
@@ -204,8 +209,10 @@ def drift_df_multicols(df,
 
     if scaler_df is None:
         scaler_df = MinMaxScaler()
+        df = pd.DataFrame(scaler_df.fit_transform(df), columns=df.columns)
 
-    df = pd.DataFrame(scaler_df.fit_transform(df), columns=df.columns)
+    else:
+        df = pd.DataFrame(scaler_df.transform(df), columns=df.columns)
 
     if sample_size is not None:
 
@@ -226,6 +233,7 @@ def drift_df_multicols(df,
     if predict == True:
          df_results = drift_detect_multicols(df=df,
                                             delta=delta,
+                                            window=window,
                                             predict=True,
                                             drift_detector_dict=drift_detector_dict,
                                             scaler_dict=scaler_dict,
@@ -237,6 +245,7 @@ def drift_df_multicols(df,
     else:
         df_results, drift_detector_dict, scaler_dict = drift_detect_multicols(df=df,
                                                                               delta=delta,
+                                                                              window=window,
                                                                               predict=False,
                                                                               drift_detector_dict=drift_detector_dict,
                                                                               scaler_dict=scaler_dict,
@@ -252,7 +261,7 @@ def drift_average_calculate(df_results,
 
     columns = [col for col in df_results.columns if col.startswith("change_")]
     totals = df_results[columns].sum()
-    percentage = totals / df_results.shape[0] * 100
+    percentage = totals / df_results.shape[0]
 
     describe = pd.Series()
     describe = describe.append(percentage)
@@ -273,30 +282,34 @@ def drift_average_calculate(df_results,
 
 
 def plot_drift(df,
-               color_discrete_sequence=['rgba(0, 204, 150, .20)'],
+               colors=['rgba(0, 204, 150, .4)', 'rgba(255,161,90, .4)'],
                ):
     ''' plot variance and change detect for each column '''
-    
-    values_columns = [col for col in df.columns if col.startswith("value_")]
-    sqrt_columns = [col for col in df.columns if col.startswith("sqrt_")]
+
+    meanc_columns = [col for col in df.columns if col.startswith("meanc_")]
+    stdc_columns = [col for col in df.columns if col.startswith("stdc_")]
     change_columns = [col for col in df.columns if col.startswith("change_")]
-    rows = len(values_columns)
+    rows = len(meanc_columns)
     fig_list = []
 
-    for value, sqrt, change in zip(values_columns, sqrt_columns, change_columns):
+    for meanc, stdc, change in zip(meanc_columns, stdc_columns, change_columns):
         fig = px.scatter(x=df.reset_index().index,
-                           y=df[sqrt],
-                           color=np.where(df[change]==1, "drift", "not drift"),
-                           title=sqrt, 
-                           color_discrete_map={"drift":'#EF553B', "not drift":'#636EFA'},
+                           y=np.where(df[change]==1, df[meanc], np.nan),
+                           color=np.where(df[change]==1, "1", np.nan),
+                           color_discrete_map={"1": '#EF553B'},
                            )
-        fig.update_layout(legend_title_text='change detect')
-        fig2 = px.line(x=df.reset_index().index, y=df[value], color_discrete_sequence=color_discrete_sequence)
-        fig2['data'][0]['showlegend'] = True
-        fig2['data'][0]['name'] = 'scaled value'
-        fig.add_trace(fig2.data[0])
+        fig2 = go.Scatter(x=df.reset_index().index, y=df[meanc], mode='lines', line={'color':colors[0]}, line_shape='spline',
+                          name='scaled mean cumulated', showlegend=True)
+        fig.add_trace(fig2)
+        fig3 = go.Scatter(x=df.reset_index().index, y=df[stdc], mode='lines', line={'color':colors[1]}, line_shape='spline',
+                          name='scaled std cumulated', showlegend=True)
+        fig.add_trace(fig3)
+        fig4 = go.Scatter(x=df.reset_index().index, y=df[change].rolling(len(df[change]), min_periods=1).agg(lambda x: x.sum() / x.count()),
+                         mode='lines', line={'color':'rgba(239,85,59,.9)'}, line_shape='spline',
+                          name='change detect cumulated', showlegend=True)
+        fig.add_trace(fig4)
         fig.update_layout(xaxis_title="X - index number",
-                          yaxis_title="Y - sqrt",
+                          yaxis_title="Y - std cumulated",
                           )
         fig_list.append(fig)
 
@@ -351,7 +364,7 @@ def change_plot(describe_fit,
 
     fig = px.bar(describe_totals, x="metrics", y="values", color="type",  facet_row="col_name", 
                  title="Describe Drift of Each Column", barmode="group",
-                 color_discrete_map={"fit":'rgba(0, 204, 150, .90)', "predict":'rgba(171, 99, 250, 0.90)'},)
+                 color_discrete_map={"fit":'rgba(0, 204, 150, .90)', "predict":'rgba(171, 99, 250, 0.9)'},)
 
     return fig
 
@@ -379,8 +392,9 @@ class DriftEstimator(object):
         
         Always automatically adjusts the size of the input dataframe to the size of the dataset used in training.
 
-        parameters:
-            - delta: delta in adwin detection, delta - the desired false positive rate (default: delta=0.1)
+        parameters:f
+            - delta: delta in adwin detection, delta - the desired false positive rate (default: delta=0.002)
+            - window: his is the number of observations used for calculating the standard deviation
             - sample_size: sample size using cluster sampling. if sample_size = None a sample is not applied (default: sample_size=0.1)
             - k: the values ​​of k to calculate the number of optimal clusters in the stratified sampling (default: k=(1,9))
             - n_clusters_without_method: n clusters when an optimum is not detected using the elbow method, 
@@ -391,8 +405,9 @@ class DriftEstimator(object):
         Based on: https://scikit-multiflow.readthedocs.io/en/stable/api/generated/skmultiflow.drift_detection.ADWIN.html#skmultiflow.drift_detection.ADWIN
     '''
 
-    def __init__(self, delta=0.1, sample_size=0.1, k=(1,9), n_clusters_without_method=5, list_of_weights=None):
+    def __init__(self, delta=0.002, window=100, sample_size=0.1, k=(1,9), n_clusters_without_method=5, list_of_weights=None):
         self.delta = delta
+        self.window = window
         self.sample_size = sample_size
         self.k = k
         self.n_clusters_without_method = n_clusters_without_method
@@ -408,6 +423,7 @@ class DriftEstimator(object):
         '''
         df_results, drift_detector_dict, scaler_dict, cluster_model, scaler_df = drift_df_multicols(df=df,
                                                                                          delta=self.delta,
+                                                                                         window=self.window,
                                                                                          predict=False,
                                                                                          sample_size=self.sample_size,
                                                                                          k=self.k,
@@ -457,6 +473,7 @@ class DriftEstimator(object):
 
         df_results_predict = drift_df_multicols(df=df,
                                                 delta=self.delta,
+                                                window=self.window,
                                                 predict=True,
                                                 drift_detector_dict=self.drift_detector_dict,
                                                 scaler_dict=self.scaler_dict,
@@ -482,7 +499,7 @@ class DriftEstimator(object):
 
         plots = plot_drift(df=self.df_results)
         plots_predict = plot_drift(df=self.df_results_predict,
-                                    color_discrete_sequence=['rgba(171, 99, 250, 0.4)'],
+                                    colors=['rgba(171, 99, 250, .4)', 'rgba(254, 203, 82, .4)'],
                                     )
         plot = multiplots(df_results=self.df_results,
                           plots=plots,
