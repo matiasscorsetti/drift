@@ -8,7 +8,7 @@ from sklearn.utils import resample
 import weightedstats as ws
 from warnings import warn
 from sklearn.preprocessing import MinMaxScaler
-from copy import copy
+from copy import deepcopy
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -29,8 +29,9 @@ def drift_detection(data_stream,
         for index, row in data_stream.iteritems():
             drift_detector.add_element(row)
             change = drift_detector.detected_change()
-            meanc_and_stdc = data_stream.iloc[:index+1].rolling(window=window, min_periods=1).agg(['mean','std'])\
-                                .fillna(0).iloc[index].to_numpy()
+            start = 0 if index+1<=window else index-window
+            meanc_and_stdc = data_stream.iloc[start:index+1].agg(['mean','std'])\
+                                .fillna(0).to_numpy()
 
             result = pd.DataFrame(data={
                                          "value": row,
@@ -45,14 +46,15 @@ def drift_detection(data_stream,
         return results, drift_detector
 
     else:
-        copy_drift_detector = copy(drift_detector)
+        copy_drift_detector = deepcopy(drift_detector)
         results = pd.DataFrame(columns=["value", "meanc", "stdc", "change"])
 
         for index, row in data_stream.iteritems():
              drift_detector.add_element(row)
              change = drift_detector.detected_change()
-             meanc_and_stdc = data_stream.iloc[:index+1].rolling(window=window, min_periods=1).agg(['mean','std'])\
-                                .fillna(0).iloc[index].to_numpy()
+             start = 0 if index+1<=window else index-window
+             meanc_and_stdc = data_stream.iloc[start:index+1].agg(['mean','std'])\
+                                .fillna(0).to_numpy()
 
              result = pd.DataFrame(data={
                                          "value": row, 
@@ -64,7 +66,7 @@ def drift_detection(data_stream,
                                    )
 
              if change==True and predict==True:
-                 drift_detector = copy(copy_drift_detector)
+                 drift_detector = deepcopy(copy_drift_detector)
 
              results = results.append(result)
         
@@ -297,6 +299,7 @@ def plot_drift(df,
                            y=np.where(df[change]==1, df[meanc], np.nan),
                            color=np.where(df[change]==1, "1", np.nan),
                            color_discrete_map={"1": '#EF553B'},
+                           size_max=0.05,
                            )
         fig2 = go.Scatter(x=df.reset_index().index, y=df[meanc], mode='lines', line={'color':colors[0]}, line_shape='spline',
                           name='scaled mean cumulated', showlegend=True)
@@ -394,7 +397,7 @@ class DriftEstimator(object):
 
         parameters:f
             - delta: delta in adwin detection, delta - the desired false positive rate (default: delta=0.002)
-            - window: his is the number of observations used for calculating the standard deviation
+            - window: his is the number of observations used for calculating the standard deviation (default: window=100)
             - sample_size: sample size using cluster sampling. if sample_size = None a sample is not applied (default: sample_size=0.1)
             - k: the values ​​of k to calculate the number of optimal clusters in the stratified sampling (default: k=(1,9))
             - n_clusters_without_method: n clusters when an optimum is not detected using the elbow method, 
