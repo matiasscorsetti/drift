@@ -2,7 +2,7 @@
 
 **Data Drift Detection**
 
-Drift estimator for multiple columns using cluster sampling and weight weights
+Drift estimator for multiple columns using cluster sampling and weights
 
 It is based on an ADWIN (ADaptive WINdowing) model for each column of a dataframe.
 ADWIN is an adaptive sliding window algorithm for detecting changes, and keep up-to-date statistics on a data stream. 
